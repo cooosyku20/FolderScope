@@ -14,11 +14,11 @@ type LogEntry struct {
 	// Timestamp はログが記録された時刻をRFC3339形式で表します
 	Timestamp string `json:"timestamp"`
 	// Level はログレベル（INFO, WARN, ERROR等）を表します
-	Level     string `json:"level"`
+	Level string `json:"level"`
 	// Message はログメッセージの内容を表します
-	Message   string `json:"message"`
+	Message string `json:"message"`
 	// Error はエラーが発生した場合のエラーメッセージを表します
-	Error     string `json:"error,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // Logger は構造化ログを出力するためのインターフェースです

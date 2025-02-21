@@ -1,3 +1,4 @@
+// Package gui はGUIを提供します
 package gui
 
 import (
@@ -6,6 +7,12 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/dialog"
+)
+
+// Default window size constants
+const (
+	DefaultWindowWidth  = 800
+	DefaultWindowHeight = 600
 )
 
 // DirectoryValidator は、ディレクトリパスの検証を行うインターフェース
@@ -28,55 +35,47 @@ func NewDirectorySelector(validator DirectoryValidator) *DirectorySelector {
 // SelectDirectory は、Fyneダイアログを使用してディレクトリを選択し、
 // 選択されたパスまたはエラーを返します
 func (s *DirectorySelector) SelectDirectory(title string) (string, error) {
+	done := make(chan struct{})
 	var result struct {
 		path string
 		err  error
 	}
 
-	// Fyneアプリケーションの作成
 	a := app.New()
 	w := a.NewWindow(title)
-	w.Resize(fyne.NewSize(800, 600))
-	done := make(chan struct{})
+	w.Resize(fyne.NewSize(DefaultWindowWidth, DefaultWindowHeight))
 
 	// ダイアログを作成して表示
-	d := dialog.NewFolderOpen(func(lu fyne.ListableURI, err error) {
+	d := dialog.NewFolderOpen(func(selectedURI fyne.ListableURI, err error) {
+		// コールバック: ユーザーがディレクトリを選択した結果を受け取る
 		if err != nil {
 			result.err = fmt.Errorf("フォルダ選択エラー: %w", err)
 			close(done)
 			return
 		}
-		if lu == nil {
+		if selectedURI == nil {
 			result.err = fmt.Errorf("ユーザーがキャンセルしました")
 			close(done)
 			return
 		}
-
-		// 選択されたパスの検証
-		path := lu.Path()
+		path := selectedURI.Path()
 		if err := s.validator.ValidateDirectoryPath(path); err != nil {
 			result.err = fmt.Errorf("パス検証エラー: %w", err)
 			close(done)
 			return
 		}
-
 		result.path = path
 		close(done)
 	}, w)
-
-	// ダイアログを表示
 	d.Show()
 	w.Show()
 
-	// イベントループを開始
+	// イベントループ内で待機するため、a.Run() を実行
 	go func() {
 		<-done
 		a.Quit()
 	}()
-
-	// メインウィンドウを実行（メインゴルーチンでのみ実行可能）
 	a.Run()
-
 	return result.path, result.err
 }
 
@@ -86,95 +85,108 @@ type DirectoryPaths struct {
 	Output string // 出力先フォルダ
 }
 
-// SelectDirectories は、調査対象フォルダと出力先フォルダの選択を一括で行います
+// openFolderDialog は、指定のウィンドウとタイトルでフォルダ選択ダイアログを表示し、
+// 選択されたパスまたはエラーを返します。
+// この関数は、コールバックを連鎖させるために使用します。
+func openFolderDialog(w fyne.Window, title string, validator DirectoryValidator) (string, error) {
+	var selectedPath string
+	var resultErr error
+
+	d := dialog.NewFolderOpen(func(selectedURI fyne.ListableURI, err error) {
+		// コールバック: ユーザーがディレクトリを選択した結果を受け取る
+		if err != nil {
+			resultErr = fmt.Errorf("%s選択エラー: %w", title, err)
+			w.Close()
+			return
+		}
+		if selectedURI == nil {
+			resultErr = fmt.Errorf("%sの選択がキャンセルされました", title)
+			w.Close()
+			return
+		}
+		path := selectedURI.Path()
+		if err := validator.ValidateDirectoryPath(path); err != nil {
+			resultErr = fmt.Errorf("%sが無効です: %w", title, err)
+			w.Close()
+			return
+		}
+		selectedPath = path
+		// ダイアログ処理完了後、ウィンドウはそのまま残す
+	}, w)
+	w.SetTitle(title)
+	d.Show()
+	return selectedPath, resultErr
+}
+
+// SelectDirectories は、調査対象フォルダと出力先フォルダの選択を一括で行います。
+// UI 操作はメインスレッド上で、コールバックを連鎖させる形で実現します。
 func SelectDirectories(selector *DirectorySelector) (*DirectoryPaths, error) {
-	// Fyneアプリケーションの作成
 	a := app.New()
 	w := a.NewWindow("FolderScope")
-	w.Resize(fyne.NewSize(800, 600))
+	w.Resize(fyne.NewSize(DefaultWindowWidth, DefaultWindowHeight))
 
-	var paths DirectoryPaths
+	paths := &DirectoryPaths{}
 	var currentError error
-	done := make(chan struct{})
 
-	var showSourceDialog func()
-	var showOutputDialog func()
+	// チェーン形式でダイアログを連続表示する
+	// まず、調査対象フォルダの選択
+	dialog.NewFolderOpen(func(sourceURI fyne.ListableURI, err error) {
+		if err != nil {
+			currentError = fmt.Errorf("調査対象フォルダの選択エラー: %w", err)
+			w.Close()
+			a.Quit()
+			return
+		}
+		if sourceURI == nil {
+			currentError = fmt.Errorf("調査対象フォルダの選択がキャンセルされました")
+			w.Close()
+			a.Quit()
+			return
+		}
+		sourcePath := sourceURI.Path()
+		if err := selector.validator.ValidateDirectoryPath(sourcePath); err != nil {
+			currentError = fmt.Errorf("調査対象フォルダが無効です: %w", err)
+			w.Close()
+			a.Quit()
+			return
+		}
+		paths.Source = sourcePath
 
-	// 出力先フォルダの選択ダイアログ
-	showOutputDialog = func() {
-		d := dialog.NewFolderOpen(func(lu fyne.ListableURI, err error) {
+		// 次に、出力先フォルダの選択
+		dialog.NewFolderOpen(func(outputURI fyne.ListableURI, err error) {
 			if err != nil {
 				currentError = fmt.Errorf("出力先フォルダの選択エラー: %w", err)
-				close(done)
+				w.Close()
+				a.Quit()
 				return
 			}
-			if lu == nil {
+			if outputURI == nil {
 				currentError = fmt.Errorf("出力先フォルダの選択がキャンセルされました")
-				close(done)
+				w.Close()
+				a.Quit()
 				return
 			}
-
-			// パスの検証
-			path := lu.Path()
-			if err := selector.validator.ValidateDirectoryPath(path); err != nil {
+			outputPath := outputURI.Path()
+			if err := selector.validator.ValidateDirectoryPath(outputPath); err != nil {
 				currentError = fmt.Errorf("出力先フォルダが無効です: %w", err)
-				close(done)
+				w.Close()
+				a.Quit()
 				return
 			}
+			paths.Output = outputPath
+			// 両方の選択が完了したのでウィンドウを閉じる
+			w.Close()
+			a.Quit()
+		}, w).Show()
 
-			paths.Output = path
-			close(done)
-		}, w)
-		w.SetTitle("出力先フォルダを選択")
-		d.Show()
-	}
+	}, w).Show()
 
-	// 調査対象フォルダの選択ダイアログ
-	showSourceDialog = func() {
-		d := dialog.NewFolderOpen(func(lu fyne.ListableURI, err error) {
-			if err != nil {
-				currentError = fmt.Errorf("調査対象フォルダの選択エラー: %w", err)
-				close(done)
-				return
-			}
-			if lu == nil {
-				currentError = fmt.Errorf("調査対象フォルダの選択がキャンセルされました")
-				close(done)
-				return
-			}
-
-			// パスの検証
-			path := lu.Path()
-			if err := selector.validator.ValidateDirectoryPath(path); err != nil {
-				currentError = fmt.Errorf("調査対象フォルダが無効です: %w", err)
-				close(done)
-				return
-			}
-
-			paths.Source = path
-			// 次のダイアログを表示
-			showOutputDialog()
-		}, w)
-		w.SetTitle("調査対象フォルダを選択")
-		d.Show()
-	}
-
-	// 最初のダイアログを表示
-	showSourceDialog()
+	// ウィンドウ表示
 	w.Show()
-
-	// イベントループを開始
-	go func() {
-		<-done
-		a.Quit()
-	}()
-
-	// メインウィンドウを実行
 	a.Run()
 
 	if currentError != nil {
 		return nil, currentError
 	}
-
-	return &paths, nil
+	return paths, nil
 }

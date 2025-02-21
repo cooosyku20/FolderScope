@@ -11,6 +11,8 @@ import (
 	"FolderScope/internal/infrastructure/logging"
 )
 
+const DefaultBinaryCheckSize = 1024
+
 // DirectoryValidator はディレクトリの検証機能を提供するインターフェースです
 type DirectoryValidator interface {
 	ValidateDirectoryPath(path string) error
@@ -24,13 +26,16 @@ type FileSystemScanner interface {
 
 // Scanner はファイルシステムをスキャンするための構造体です
 type Scanner struct {
-	// logger はログ出力を行うインターフェースです
-	logger logging.Logger
+	logger          logging.Logger
+	binaryCheckSize int
 }
 
 // NewScanner は新しい Scanner インスタンスを作成します
 func NewScanner(logger logging.Logger) *Scanner {
-	return &Scanner{logger: logger}
+	return &Scanner{
+		logger:          logger,
+		binaryCheckSize: DefaultBinaryCheckSize,
+	}
 }
 
 // ValidateDirectoryPath はパスが安全で有効なディレクトリであることを確認します
@@ -61,8 +66,7 @@ func (s *Scanner) ValidateDirectoryPath(path string) error {
 
 // isBinaryFile は与えられたバイトデータがバイナリファイルかどうかを判定します
 func (s *Scanner) isBinaryFile(content []byte) bool {
-	// 先頭1024バイトまでを検査
-	checkSize := 1024
+	checkSize := s.binaryCheckSize
 	if len(content) < checkSize {
 		checkSize = len(content)
 	}

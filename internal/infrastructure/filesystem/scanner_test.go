@@ -93,7 +93,7 @@ func TestScanner_Scan(t *testing.T) {
 		t.Fatalf("テストファイルの作成に失敗: %v", err)
 	}
 
-	// Changed: バイナリファイルの作成
+	// バイナリファイルの作成
 	binaryFile := filepath.Join(tempDir, "binary.bin")
 	binaryContent := []byte{0x00, 0x01, 0x02, 0x03}
 	if err := os.WriteFile(binaryFile, binaryContent, 0644); err != nil {
@@ -151,7 +151,6 @@ func TestScanner_Scan(t *testing.T) {
 	}
 }
 
-// Changed: バイナリファイル判定のユニットテストを追加
 func TestScanner_isBinaryFile(t *testing.T) {
 	logger := &mockLogger{}
 	scanner := NewScanner(logger)

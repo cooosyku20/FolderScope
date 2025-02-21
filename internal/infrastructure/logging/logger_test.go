@@ -63,7 +63,7 @@ func TestJSONLogger(t *testing.T) {
 			if err != nil {
 				t.Errorf("タイムスタンプの解析に失敗: %v", err)
 			}
-			
+
 			timeDiff := time.Since(logTime)
 			if timeDiff > time.Minute {
 				t.Errorf("タイムスタンプが不正: got %v, 現在との差が1分以上", logEntry.Timestamp)

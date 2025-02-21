@@ -12,6 +12,12 @@ import (
 	"FolderScope/internal/domain/model"
 )
 
+const (
+	OutputFilePrefix = "output_"
+	OutputFileSuffix = ".txt"
+	TimestampLayout  = "20060102_150405"
+)
+
 // Generator はレポート生成機能を提供します
 type Generator struct{}
 
@@ -22,8 +28,8 @@ func NewGenerator() *Generator {
 
 // CreateOutputFile は出力ファイルを作成します
 func (g *Generator) CreateOutputFile(outputDir string) (*os.File, string, error) {
-	timestamp := time.Now().Format("20060102_150405")
-	outputPath := filepath.Join(outputDir, fmt.Sprintf("output_%s.txt", timestamp))
+	timestamp := time.Now().Format(TimestampLayout)
+	outputPath := filepath.Join(outputDir, fmt.Sprintf("%s%s%s", OutputFilePrefix, timestamp, OutputFileSuffix))
 
 	outputFile, err := os.Create(outputPath)
 	if err != nil {
@@ -33,10 +39,11 @@ func (g *Generator) CreateOutputFile(outputDir string) (*os.File, string, error)
 	return outputFile, outputPath, nil
 }
 
-// WriteFileSystemStructure はファイルシステムの構造を出力します
+// WriteFileSystemStructure はエントリの深さに応じたインデントを付与し,
+// フォルダ（[DIR]）とファイル（[FILE]）を一覧で出力します。
 func (g *Generator) WriteFileSystemStructure(writer io.Writer, entries []model.FileSystemEntry) {
 	fmt.Fprintln(writer, "===== フォルダ・ファイル構成 =====")
-	
+
 	for _, entry := range entries {
 		indent := strings.Repeat("  ", entry.Depth)
 		entryType := "[FILE]"
