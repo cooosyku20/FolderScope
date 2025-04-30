@@ -1,7 +1,6 @@
 package report
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,39 +94,84 @@ func TestGenerator_WriteFileContents(t *testing.T) {
 	generator := NewGenerator()
 	var buf strings.Builder
 
+	// --- Test Setup: Create temporary files ---
+	tempDir, err := os.MkdirTemp("", "generator_content_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// 1. Normal text file
+	file1Path := filepath.Join(tempDir, "file1.txt")
+	file1Content := "test content 1"
+	if err := os.WriteFile(file1Path, []byte(file1Content), 0644); err != nil {
+		t.Fatalf("Failed to write file1: %v", err)
+	}
+
+	// 2. Binary file
+	file2Path := filepath.Join(tempDir, "file2.bin")
+	file2Content := []byte{0x00, 0x01, 0x02} // Binary content
+	if err := os.WriteFile(file2Path, file2Content, 0644); err != nil {
+		t.Fatalf("Failed to write file2: %v", err)
+	}
+
+	// 3. File that will be made unreadable
+	file3Path := filepath.Join(tempDir, "file3.txt")
+	if err := os.WriteFile(file3Path, []byte("unreadable"), 0000); err != nil { // Write with 0000 permissions
+		t.Fatalf("Failed to write file3: %v", err)
+	}
+	// --- End Test Setup ---
+
 	entries := []model.FileSystemEntry{
 		{
-			Path:    "/test/file1.txt",
+			Path:    file1Path, // Use actual path
 			IsDir:   false,
 			RelPath: "file1.txt",
-			Content: []byte("test content 1"),
+			// Content: []byte("test content 1"), // Removed
 		},
 		{
-			Path:    "/test/file2.txt",
+			Path:    file2Path, // Use actual path
 			IsDir:   false,
-			RelPath: "file2.txt",
-			ReadErr: errors.New("読み込みエラー"),
+			RelPath: "file2.bin",
+			// ReadErr: errors.New("読み込みエラー"), // Removed
 		},
 		{
-			Path:  "/test/dir",
-			IsDir: true,
+			Path:    file3Path, // Use actual path for unreadable file
+			IsDir:   false,
+			RelPath: "file3.txt",
+		},
+		{
+			Path:    filepath.Join(tempDir, "dir"),
+			IsDir:   true,
+			RelPath: "dir",
 		},
 	}
 
 	generator.WriteFileContents(&buf, entries)
 
 	output := buf.String()
-	expectedLines := []string{
+	expectedSubstrings := []string{ // Use substrings as error messages might vary slightly
 		"===== ファイル内容 =====",
 		"----- file1.txt -----",
-		"test content 1",
-		"----- file2.txt -----",
-		"[読み込みエラー]",
+		file1Content, // Check for actual content
+		"------------------------",
+		"----- file2.bin -----",
+		"[バイナリファイルのためスキップ]", // Check for binary skip message
+		"------------------------",
+		"----- file3.txt -----",
+		"[読み込みエラー]",         // Check for read error indicator
+		"permission denied", // Check for part of the expected permission error
+		"------------------------",
 	}
 
-	for _, line := range expectedLines {
-		if !strings.Contains(output, line) {
-			t.Errorf("出力に期待される行が含まれていない: %v", line)
+	for _, sub := range expectedSubstrings {
+		if !strings.Contains(output, sub) {
+			t.Errorf("出力に期待される部分文字列が含まれていない: %q\nOutput:\n%s", sub, output)
 		}
+	}
+
+	// Check that the directory was skipped (no ----- dir -----)
+	if strings.Contains(output, "----- dir -----") {
+		t.Errorf("Directory entry was processed in WriteFileContents")
 	}
 }

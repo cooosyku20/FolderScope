@@ -1,7 +1,6 @@
 package model
 
 import (
-	"errors"
 	"testing"
 )
 
@@ -29,7 +28,6 @@ func TestFileSystemEntry(t *testing.T) {
 			entry: FileSystemEntry{
 				Path:    "/test/file.txt",
 				IsDir:   false,
-				Content: []byte("test content"),
 				RelPath: "file.txt",
 				Depth:   1,
 			},
@@ -43,7 +41,6 @@ func TestFileSystemEntry(t *testing.T) {
 				IsDir:   false,
 				RelPath: "error.txt",
 				Depth:   1,
-				ReadErr: errors.New("読み込みエラー"),
 			},
 			wantPath: "/test/error.txt",
 			wantDir:  false,

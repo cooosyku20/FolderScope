@@ -2,7 +2,9 @@
 package filesystem
 
 import (
+	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +23,7 @@ type DirectoryValidator interface {
 // FileSystemScanner はファイルシステムのスキャン機能を提供するインターフェースです
 type FileSystemScanner interface {
 	DirectoryValidator
-	Scan(rootDir string) ([]model.FileSystemEntry, error)
+	Scan(ctx context.Context, rootDir string) ([]model.FileSystemEntry, error)
 }
 
 // Scanner はファイルシステムをスキャンするための構造体です
@@ -81,53 +83,83 @@ func (s *Scanner) isBinaryFile(content []byte) bool {
 }
 
 // Scan はファイルシステムを走査し、エントリを収集します
-func (s *Scanner) Scan(rootDir string) ([]model.FileSystemEntry, error) {
+// context.Context を受け取り、キャンセル可能にします
+func (s *Scanner) Scan(ctx context.Context, rootDir string) ([]model.FileSystemEntry, error) {
 	var entries []model.FileSystemEntry
 
-	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+	// filepath.WalkDir を使用 (Go 1.16+)
+	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+		// コンテキストのキャンセルをチェック
+		select {
+		case <-ctx.Done():
+			return ctx.Err() // コンテキストがキャンセルされたらエラーを返す
+		default:
+			// 処理を続行
+		}
+
+		// WalkDir自体が返すエラー（例：権限）をチェック
 		if err != nil {
-			s.logger.Log("WARN", fmt.Sprintf("パス '%s' の走査中にエラー発生", path), err)
+			s.logger.Log("WARN", fmt.Sprintf("パス '%s' のアクセス中にエラー発生", path), err)
+			// ディレクトリ自体にアクセスできない場合など、スキップ可能なエラーはnilを返す
+			if d == nil || !d.IsDir() {
+				return nil // ファイルへのアクセスエラーはスキップ
+			}
+			return fmt.Errorf("ディレクトリ '%s' のアクセスエラー: %w", path, err) // ディレクトリへのアクセスエラーは致命的として返す
+		}
+
+		// ルートディレクトリ自体はスキップ
+		if path == rootDir {
 			return nil
 		}
 
 		relPath, err := filepath.Rel(rootDir, path)
 		if err != nil {
 			s.logger.Log("WARN", fmt.Sprintf("相対パスの取得に失敗: %s", path), err)
-			return nil
+			return nil // 相対パス取得エラーはスキップ
 		}
 
-		if relPath == "." {
-			return nil
-		}
+		// info, err := d.Info() // fs.DirEntryからFileInfoを取得 - Not needed anymore
+		// if err != nil {
+		// 	s.logger.Log("WARN", fmt.Sprintf("ファイル情報 '%s' の取得に失敗", path), err)
+		// 	return nil // FileInfo取得エラーはスキップ
+		// }
 
 		entry := model.FileSystemEntry{
 			Path:    path,
-			IsDir:   info.IsDir(),
+			IsDir:   d.IsDir(), // DirEntryから IsDir を取得
 			RelPath: relPath,
 			Depth:   strings.Count(relPath, string(os.PathSeparator)),
 		}
 
-		if !info.IsDir() {
-			content, err := os.ReadFile(path)
-			if err != nil {
-				s.logger.Log("ERROR", fmt.Sprintf("ファイル '%s' の読み込みに失敗", path), err)
-				return nil
+		if !d.IsDir() {
+			// コンテキストのキャンセルを再度チェック（ファイル読み込み前）
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
 			}
 
-			if s.isBinaryFile(content) {
-				s.logger.Log("WARN", fmt.Sprintf("バイナリファイルのためスキップ: %s", path), nil)
-				return nil
-			}
+			// // content, err := os.ReadFile(path) // Remove file reading
+			// if err != nil {
+			// 	s.logger.Log("ERROR", fmt.Sprintf("ファイル '%s' の読み込みに失敗", path), err)
+			// 	return nil // ファイル読み込みエラーはスキップ（エラーを伝播させたい場合は err を返す）
+			// }
 
-			entry.Content = content
+			// // if s.isBinaryFile(content) { // Remove binary check
+			// // 	s.logger.Log("WARN", fmt.Sprintf("バイナリファイルのためスキップ: %s", path), nil)
+			// // 	return nil
+			// // }
+
+			// entry.Content = content // Remove content assignment
 		}
 
 		entries = append(entries, entry)
-		return nil
+		return nil // このパスの処理は成功
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("ファイルシステムの走査に失敗しました: %w", err)
+		// WalkDir自体から返されたエラー、またはコールバック内で返されたエラー
+		return nil, fmt.Errorf("ファイルシステムの走査中にエラーが発生しました: %w", err)
 	}
 
 	return entries, nil

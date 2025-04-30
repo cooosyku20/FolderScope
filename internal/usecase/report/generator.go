@@ -54,7 +54,24 @@ func (g *Generator) WriteFileSystemStructure(writer io.Writer, entries []model.F
 	}
 }
 
-// WriteFileContents はファイルの内容を出力します
+// isBinaryFile は与えられたバイトデータがバイナリファイルかどうかを判定します
+// (Scannerから移動)
+func isBinaryFile(content []byte) bool {
+	const checkSize = 1024 // DefaultBinaryCheckSize に合わせる
+	limit := len(content)
+	if limit > checkSize {
+		limit = checkSize
+	}
+
+	for i := 0; i < limit; i++ {
+		if content[i] == 0x00 || (content[i] < 0x09 && content[i] != 0x0A && content[i] != 0x0D) {
+			return true
+		}
+	}
+	return false
+}
+
+// WriteFileContents はファイルの内容を読み込んで出力します
 func (g *Generator) WriteFileContents(writer io.Writer, entries []model.FileSystemEntry) {
 	fmt.Fprintln(writer, "\n===== ファイル内容 =====")
 
@@ -64,11 +81,16 @@ func (g *Generator) WriteFileContents(writer io.Writer, entries []model.FileSyst
 		}
 
 		fmt.Fprintf(writer, "----- %s -----\n", entry.RelPath)
-		if entry.ReadErr != nil {
-			fmt.Fprintf(writer, "[読み込みエラー] %v\n", entry.ReadErr)
+
+		content, err := os.ReadFile(entry.Path) // Read file content here
+		if err != nil {
+			fmt.Fprintf(writer, "[読み込みエラー] %v\n", err) // Handle read error
+		} else if isBinaryFile(content) {
+			fmt.Fprintln(writer, "[バイナリファイルのためスキップ]") // Handle binary file
 		} else {
-			fmt.Fprintln(writer, string(entry.Content))
+			fmt.Fprintln(writer, string(content)) // Write content
 		}
+
 		fmt.Fprintln(writer, "------------------------")
 	}
 }

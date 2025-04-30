@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -46,7 +47,7 @@ func main() {
 	logger.Log("INFO", "出力ファイルを作成しました", nil)
 
 	// フォルダ構造のスキャン
-	entries, err := scanner.Scan(sourceDir)
+	entries, err := scanner.Scan(context.Background(), sourceDir)
 	if err != nil {
 		logger.Log("ERROR", "フォルダ構造のスキャンに失敗", err)
 		log.Fatalf("エラー: %v", err)

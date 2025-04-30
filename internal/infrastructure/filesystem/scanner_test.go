@@ -1,9 +1,9 @@
 package filesystem
 
 import (
+	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -100,13 +100,14 @@ func TestScanner_Scan(t *testing.T) {
 		t.Fatalf("バイナリファイルの作成に失敗: %v", err)
 	}
 
-	entries, err := scanner.Scan(tempDir)
+	// context.Background() を渡す
+	entries, err := scanner.Scan(context.Background(), tempDir)
 	if err != nil {
 		t.Fatalf("Scan() error = %v", err)
 	}
 
-	// エントリの数を確認（バイナリファイルはスキップされるため2つ）
-	expectedEntries := 2 // testdir と testfile.txt
+	// エントリの数を確認（バイナリファイルも含むため3つ）
+	expectedEntries := 3 // testdir, testfile.txt, binary.bin
 	if len(entries) != expectedEntries {
 		t.Errorf("Scan() got %v entries, want %v", len(entries), expectedEntries)
 	}
@@ -119,9 +120,6 @@ func TestScanner_Scan(t *testing.T) {
 			foundDir = true
 		case "testfile.txt":
 			foundFile = true
-			if string(entry.Content) != "test content" {
-				t.Errorf("File content = %v, want %v", string(entry.Content), "test content")
-			}
 		case "binary.bin":
 			foundBinary = true
 		}
@@ -133,21 +131,8 @@ func TestScanner_Scan(t *testing.T) {
 	if !foundFile {
 		t.Error("File not found in scan results")
 	}
-	if foundBinary {
-		t.Error("Binary file should be skipped but was found in scan results")
-	}
-
-	// ログメッセージの確認
-	var foundBinaryLog bool
-	for _, log := range logger.logs {
-		if log.level == "WARN" && strings.Contains(log.message, "バイナリファイルのためスキップ") {
-			foundBinaryLog = true
-			break
-		}
-	}
-
-	if !foundBinaryLog {
-		t.Error("バイナリファイルスキップのログが出力されていません")
+	if !foundBinary {
+		t.Error("Binary file entry not found in scan results")
 	}
 }
 
