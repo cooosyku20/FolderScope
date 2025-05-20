@@ -4,6 +4,7 @@ package filesystem
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 )
 
 const DefaultBinaryCheckSize = 1024
+
+// DefaultIgnorePatterns はデフォルトで無視するパターンです。
+var DefaultIgnorePatterns = []string{".git", ".DS_Store", ".idea", ".vscode"} // デフォルト無視パターンを追加
 
 // DirectoryValidator はディレクトリの検証機能を提供するインターフェースです
 type DirectoryValidator interface {
@@ -28,15 +32,32 @@ type FileSystemScanner interface {
 
 // Scanner はファイルシステムをスキャンするための構造体です
 type Scanner struct {
-	logger          logging.Logger
-	binaryCheckSize int
+	logger            logging.Logger
+	binaryCheckSize   int
+	ignorePatterns    []string // 追加
+	ignoreBinaryFiles bool     // 追加
 }
 
 // NewScanner は新しい Scanner インスタンスを作成します
-func NewScanner(logger logging.Logger) *Scanner {
+// 引数に ignorePatterns と ignoreBinaryFiles を追加
+func NewScanner(logger logging.Logger, ignorePatterns []string, ignoreBinaryFiles bool) *Scanner {
+	// デフォルトの無視パターンとユーザー指定の無視パターンをマージ
+	allIgnorePatterns := append(DefaultIgnorePatterns, ignorePatterns...) // DefaultIgnorePatterns を先に
+	// 重複を削除する場合 (オプション)
+	// uniquePatterns := make(map[string]struct{})
+	// for _, p := range allIgnorePatterns {
+	//  uniquePatterns[p] = struct{}{}
+	// }
+	// finalPatterns := make([]string, 0, len(uniquePatterns))
+	// for p := range uniquePatterns {
+	//  finalPatterns = append(finalPatterns, p)
+	// }
+
 	return &Scanner{
-		logger:          logger,
-		binaryCheckSize: DefaultBinaryCheckSize,
+		logger:            logger,
+		binaryCheckSize:   DefaultBinaryCheckSize,
+		ignorePatterns:    allIgnorePatterns, // マージしたパターンを使用
+		ignoreBinaryFiles: ignoreBinaryFiles,
 	}
 }
 
@@ -55,12 +76,9 @@ func (s *Scanner) ValidateDirectoryPath(path string) error {
 		return fmt.Errorf("指定されたパスはディレクトリではありません")
 	}
 
-	if !filepath.IsAbs(path) {
-		return fmt.Errorf("絶対パスで指定してください")
-	}
-
-	if strings.ContainsAny(path, "<>|?*") {
-		return fmt.Errorf("パスに不正な文字が含まれています")
+	// NULLバイトのみをチェックする
+	if strings.ContainsRune(path, '\000') {
+		return fmt.Errorf("パスにNULLバイトが含まれています")
 	}
 
 	return nil
@@ -68,97 +86,184 @@ func (s *Scanner) ValidateDirectoryPath(path string) error {
 
 // isBinaryFile は与えられたバイトデータがバイナリファイルかどうかを判定します
 func (s *Scanner) isBinaryFile(content []byte) bool {
-	checkSize := s.binaryCheckSize
-	if len(content) < checkSize {
-		checkSize = len(content)
+	limit := len(content)
+	if limit == 0 { // 空のファイルはバイナリではない
+		return false
+	}
+	if limit > s.binaryCheckSize {
+		limit = s.binaryCheckSize
 	}
 
-	// NULL(0x00)や制御不能文字を検出
-	for i := 0; i < checkSize; i++ {
-		if content[i] == 0x00 || (content[i] < 0x09 && content[i] != 0x0A && content[i] != 0x0D) {
+	for i := 0; i < limit; i++ {
+		if content[i] == 0x00 { // NULLバイトがあればバイナリとみなす
 			return true
 		}
+		// 制御文字の判定をより厳密に (ただし、UTF-8テキスト内の特定の制御文字は許容される場合がある)
+		// ここでは簡略化のため、NULLバイトのみを主な判定基準とする
+		// if (content[i] < 0x09 && content[i] != 0x0A && content[i] != 0x0D) {
+		//  return true
+		// }
 	}
+	// textChars / totalChars の比率で判定する方法もあるが、ここでは単純な NULL バイトチェック
 	return false
+}
+
+// matchesIgnorePattern は指定されたパスが無視パターンに一致するかどうかを確認します
+func (s *Scanner) matchesIgnorePattern(path string, d fs.DirEntry) (bool, error) {
+	name := d.Name() // ディレクトリ名またはファイル名で比較
+	for _, pattern := range s.ignorePatterns {
+		// パターンがディレクトリを示す場合 (例: "node_modules/") は、ディレクトリ名全体と比較
+		if strings.HasSuffix(pattern, string(filepath.Separator)) {
+			if d.IsDir() && strings.TrimSuffix(pattern, string(filepath.Separator)) == name {
+				return true, nil
+			}
+		} else {
+			// ファイル名またはディレクトリ名に対する glob パターンマッチ
+			matched, err := filepath.Match(pattern, name)
+			if err != nil {
+				s.logger.Log("WARN", fmt.Sprintf("無視パターンの評価エラー: %s on %s", pattern, name), err)
+				// パターンエラーは無視して処理を続行（またはエラーとして扱うか選択）
+				continue
+			}
+			if matched {
+				return true, nil
+			}
+		}
+	}
+	// フルパスに対するマッチも追加 (オプション)
+	// for _, pattern := range s.ignorePatterns {
+	//   if strings.HasPrefix(path, pattern) { // 例: "/abs/path/to/ignore_this_dir"
+	//     return true, nil
+	//   }
+	// }
+	return false, nil
 }
 
 // Scan はファイルシステムを走査し、エントリを収集します
 // context.Context を受け取り、キャンセル可能にします
 func (s *Scanner) Scan(ctx context.Context, rootDir string) ([]model.FileSystemEntry, error) {
 	var entries []model.FileSystemEntry
+	absRootDir, err := filepath.Abs(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("ルートディレクトリの絶対パス取得に失敗: %w", err)
+	}
 
-	// filepath.WalkDir を使用 (Go 1.16+)
-	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
-		// コンテキストのキャンセルをチェック
+	// Scan開始前にルートディレクトリの存在と種類を確認
+	info, err := os.Stat(absRootDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("指定されたルートディレクトリが存在しません: %s", absRootDir)
+		}
+		return nil, fmt.Errorf("ルートディレクトリ情報の取得に失敗: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("指定されたルートパスはディレクトリではありません: %s", absRootDir)
+	}
+
+	err = filepath.WalkDir(absRootDir, func(path string, d fs.DirEntry, walkErr error) error {
 		select {
 		case <-ctx.Done():
-			return ctx.Err() // コンテキストがキャンセルされたらエラーを返す
+			return ctx.Err()
 		default:
-			// 処理を続行
 		}
 
-		// WalkDir自体が返すエラー（例：権限）をチェック
-		if err != nil {
-			s.logger.Log("WARN", fmt.Sprintf("パス '%s' のアクセス中にエラー発生", path), err)
-			// ディレクトリ自体にアクセスできない場合など、スキップ可能なエラーはnilを返す
-			if d == nil || !d.IsDir() {
-				return nil // ファイルへのアクセスエラーはスキップ
+		if walkErr != nil {
+			// WalkDir からのエラー（権限など）
+			// 特定のエラー（例: os.ErrPermission）をより詳細にハンドリングすることも可能
+			s.logger.Log("WARN", fmt.Sprintf("パス '%s' のアクセス中にエラー発生 (WalkDir)", path), walkErr)
+			if d != nil && d.IsDir() {
+				return fs.SkipDir // ディレクトリへのアクセスエラーの場合、そのディレクトリはスキップ
 			}
-			return fmt.Errorf("ディレクトリ '%s' のアクセスエラー: %w", path, err) // ディレクトリへのアクセスエラーは致命的として返す
+			return nil // ファイルへのアクセスエラーはスキップして処理を続行
 		}
 
-		// ルートディレクトリ自体はスキップ
-		if path == rootDir {
+		// ルートディレクトリ自体は結果に含めない
+		if path == absRootDir {
 			return nil
 		}
 
-		relPath, err := filepath.Rel(rootDir, path)
-		if err != nil {
-			s.logger.Log("WARN", fmt.Sprintf("相対パスの取得に失敗: %s", path), err)
-			return nil // 相対パス取得エラーはスキップ
+		// 無視パターンのチェック
+		// WalkDir はディレクトリを先に処理するため、ここでディレクトリを無視すればその中身もスキップされる
+		isIgnored, patternErr := s.matchesIgnorePattern(path, d)
+		if patternErr != nil {
+			// パターン評価エラーのログは matchesIgnorePattern 内で記録済み
+			// ここではエラーを返さずに処理を続けるか、エラーを返すか選択
+		}
+		if isIgnored {
+			s.logger.Log("DEBUG", fmt.Sprintf("パス '%s' は無視パターンに一致しました。", path), nil)
+			if d.IsDir() {
+				return fs.SkipDir // ディレクトリの場合は中身もスキップ
+			}
+			return nil // ファイルの場合はこのファイルのみスキップ
 		}
 
-		// info, err := d.Info() // fs.DirEntryからFileInfoを取得 - Not needed anymore
-		// if err != nil {
-		// 	s.logger.Log("WARN", fmt.Sprintf("ファイル情報 '%s' の取得に失敗", path), err)
-		// 	return nil // FileInfo取得エラーはスキップ
-		// }
+		relPath, err := filepath.Rel(absRootDir, path)
+		if err != nil {
+			s.logger.Log("WARN", fmt.Sprintf("相対パスの取得に失敗: %s", path), err)
+			return nil
+		}
+		relPath = filepath.ToSlash(relPath) // パス区切りを '/' に統一
+
+		depth := strings.Count(relPath, "/")
+		// ルート直下は Depth 0 だが、一般的には1から数えるため調整 (オプション)
+		// if relPath != "" { depth++ }
 
 		entry := model.FileSystemEntry{
 			Path:    path,
-			IsDir:   d.IsDir(), // DirEntryから IsDir を取得
+			IsDir:   d.IsDir(),
 			RelPath: relPath,
-			Depth:   strings.Count(relPath, string(os.PathSeparator)),
+			Depth:   depth, // ルートからの階層 (ルート直下を0とするか1とするかは要件次第)
+			// Size と ModTime は fs.DirEntry から取得可能 (d.Info())
 		}
 
 		if !d.IsDir() {
-			// コンテキストのキャンセルを再度チェック（ファイル読み込み前）
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
+			// ファイルの場合、バイナリ判定とスキップ処理
+			var fileContent []byte
+
+			// os.ReadFile は Go 1.16+
+			// fileContent, readErrForBinaryCheck = os.ReadFile(path)
+
+			// より制御しやすくするために os.Open, Read, Close を使う
+			file, openErr := os.Open(path)
+			if openErr != nil {
+				s.logger.Log("WARN", fmt.Sprintf("ファイル '%s' のオープンに失敗", path), openErr)
+				entry.ReadErr = openErr
+				// オープン失敗時はバイナリ判定不可、エラーとしてマーク
+				// IsBinary はデフォルトで false のまま
+			} else {
+				defer file.Close() // walkDir の各イテレーションで呼ばれるため、確実にクローズする
+				buffer := make([]byte, s.binaryCheckSize)
+				n, readErr := file.Read(buffer)
+				if readErr != nil && readErr != io.EOF {
+					s.logger.Log("WARN", fmt.Sprintf("ファイル '%s' の読み込みに失敗（バイナリ判定用）", path), readErr)
+					entry.ReadErr = readErr
+				}
+				fileContent = buffer[:n] // 実際に読み込めた部分だけを渡す
+
+				// file.Close() は defer で実行される
 			}
 
-			// // content, err := os.ReadFile(path) // Remove file reading
-			// if err != nil {
-			// 	s.logger.Log("ERROR", fmt.Sprintf("ファイル '%s' の読み込みに失敗", path), err)
-			// 	return nil // ファイル読み込みエラーはスキップ（エラーを伝播させたい場合は err を返す）
-			// }
+			if entry.ReadErr == nil { // ファイルが正常に（一部でも）読み込めた場合のみバイナリ判定
+				entry.IsBinary = s.isBinaryFile(fileContent)
+			}
 
-			// // if s.isBinaryFile(content) { // Remove binary check
-			// // 	s.logger.Log("WARN", fmt.Sprintf("バイナリファイルのためスキップ: %s", path), nil)
-			// // 	return nil
-			// // }
-
-			// entry.Content = content // Remove content assignment
+			if s.ignoreBinaryFiles && entry.IsBinary {
+				s.logger.Log("DEBUG", fmt.Sprintf("バイナリファイル '%s' は無視されます。", path), nil)
+				return nil // バイナリファイルを無視する設定の場合、スキップ
+			}
 		}
 
 		entries = append(entries, entry)
-		return nil // このパスの処理は成功
+		return nil
 	})
 
-	if err != nil {
+	if err != nil && err != fs.SkipDir { // SkipDir はエラーとして扱わない
 		// WalkDir自体から返されたエラー、またはコールバック内で返されたエラー
+		// ctx.Err() の場合もここに到達する
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			s.logger.Log("INFO", "スキャン処理がキャンセルまたはタイムアウトしました。", err)
+			return nil, err
+		}
 		return nil, fmt.Errorf("ファイルシステムの走査中にエラーが発生しました: %w", err)
 	}
 

@@ -18,7 +18,7 @@ func main() {
 	logger := logging.NewJSONLogger(os.Stdout)
 
 	// ファイルシステムスキャナーの初期化
-	scanner := filesystem.NewScanner(logger)
+	scanner := filesystem.NewScanner(logger, nil, false)
 
 	// ディレクトリセレクターの初期化（Fyneベース）
 	selector := gui.NewDirectorySelector(scanner)

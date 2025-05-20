@@ -6,11 +6,12 @@ import (
 
 func TestFileSystemEntry(t *testing.T) {
 	tests := []struct {
-		name     string
-		entry    FileSystemEntry
-		wantPath string
-		wantDir  bool
-		wantErr  error
+		name         string
+		entry        FileSystemEntry
+		wantPath     string
+		wantDir      bool
+		wantErr      error
+		wantIsBinary bool
 	}{
 		{
 			name: "ディレクトリエントリ",
@@ -20,8 +21,9 @@ func TestFileSystemEntry(t *testing.T) {
 				RelPath: "dir",
 				Depth:   1,
 			},
-			wantPath: "/test/dir",
-			wantDir:  true,
+			wantPath:     "/test/dir",
+			wantDir:      true,
+			wantIsBinary: false,
 		},
 		{
 			name: "ファイルエントリ",
@@ -31,8 +33,9 @@ func TestFileSystemEntry(t *testing.T) {
 				RelPath: "file.txt",
 				Depth:   1,
 			},
-			wantPath: "/test/file.txt",
-			wantDir:  false,
+			wantPath:     "/test/file.txt",
+			wantDir:      false,
+			wantIsBinary: false,
 		},
 		{
 			name: "エラーを含むエントリ",
@@ -42,8 +45,9 @@ func TestFileSystemEntry(t *testing.T) {
 				RelPath: "error.txt",
 				Depth:   1,
 			},
-			wantPath: "/test/error.txt",
-			wantDir:  false,
+			wantPath:     "/test/error.txt",
+			wantDir:      false,
+			wantIsBinary: false,
 		},
 	}
 
@@ -54,6 +58,9 @@ func TestFileSystemEntry(t *testing.T) {
 			}
 			if tt.entry.IsDir != tt.wantDir {
 				t.Errorf("IsDir = %v, want %v", tt.entry.IsDir, tt.wantDir)
+			}
+			if tt.entry.IsBinary != tt.wantIsBinary {
+				t.Errorf("IsBinary = %v, want %v", tt.entry.IsBinary, tt.wantIsBinary)
 			}
 		})
 	}

@@ -58,7 +58,7 @@ func BenchmarkScanner_Scan(b *testing.B) {
 	// Use a logger that discards output to avoid interfering with benchmark timing.
 	// Alternatively, use the mockLogger if log verification is needed (less ideal for pure perf).
 	logger := logging.NewJSONLogger(io.Discard) // Discard logs during benchmark
-	scanner := NewScanner(logger)
+	scanner := NewScanner(logger, nil, false)   // デフォルトの無視オプションでベンチマーク
 
 	// Setup: Create a moderately complex directory structure
 	// Adjust depth, filesPerDir, dirsPerDir for different scenarios
